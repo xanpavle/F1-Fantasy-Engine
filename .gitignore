@@ -1,0 +1,11 @@
+# Ignore Python Cache
+__pycache__/
+*.pyc
+
+# Ignore FastF1 Cache
+.fastf1_cache/
+
+# Ignore Generated Output Files
+drivers_ml_ready.csv
+constructors_ml_ready.csv
+market_predictions.json
