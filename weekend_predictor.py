@@ -1,39 +1,4 @@
-"""
-weekend_predictor.py  —  F1 Prediction Game Solver  (2026 Season)
-═══════════════════════════════════════════════════════════════════════════════
-Strictly FP-Telemetry Driven Prediction Engine.
 
-Requires (run in order before this script):
-  1. market_harvester.py   → writes drivers_ml_ready.csv + constructors_ml_ready.csv
-  2. market_predict.py     → writes market_predictions.json
-
-Answers all known F1 Prediction Game question variants:
-
-  CORE (always present):
-    Q1  — Full race top-10 finishers
-    Q2  — Pole position driver
-    Q3  — All possible driver 1v1 qualifying matchups (full matrix)
-    Q4  — Team qualifying segment (Q1/Q2/Q3) projections — all teams, all outcomes
-    Q5  — Which team sets the fastest DHL pitstop
-    Q6  — Will there be a Safety Car or VSC during the GP
-    Q7  — Midfield 4-way head-to-head (any combination)
-    Q8  — Driver position bracket (Podium / 4th–10th / 11th–22nd / NC)
-    Q9  — Who sets the fastest lap of the race
-    Q10 — How many classified finishers
-
-  VARIANT (appear some weekends):
-    V1  — How many times will the red flag be used
-    V2  — Will all 22 cars complete the first lap
-    V3  — How many teams score points in the Sprint
-    V4  — Which driver finishes highest in the Sprint
-    V5  — Who leads the Drivers' Championship after this race
-    V6  — Where does [driver] finish in the Sprint
-    V7  — Will the Safety Car/VSC be required in the first 10 laps
-    V8  — Who leads the Constructors' Championship after this race
-    V9  — How many teams will get a driver into Q3
-    V10 — Which team scores the most points over the weekend
-═══════════════════════════════════════════════════════════════════════════════
-"""
 
 import json
 import sys
@@ -43,60 +8,53 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
+
 PREDICTIONS_JSON  = Path("market_predictions.json")
 DRIVERS_CSV       = Path("drivers_ml_ready.csv")
 CONSTRUCTORS_CSV  = Path("constructors_ml_ready.csv")
 
-# ── Sprint weekends in 2026 (race rounds) ─────────────────────────────────────
-SPRINT_ROUNDS = {2, 6, 9, 18, 20, 22}   # adjust as the calendar firms up
 
-# ── Points system (standard + fastest lap bonus) ──────────────────────────────
+SPRINT_ROUNDS = {2, 6, 9, 18, 20, 22} 
+
 POINTS_TABLE = {1:25, 2:18, 3:15, 4:12, 5:10, 6:8, 7:6, 8:4, 9:2, 10:1}
 SPRINT_POINTS = {1:8, 2:7, 3:6, 4:5, 5:4, 6:3, 7:2, 8:1}
 
-# ── Safety car / red flag / lap-1 thresholds ─────────────────────────────────
-SC_THRESHOLD        = 0.075   # circuit_dnf_rate ≥ this → SC/VSC expected
-SC_EARLY_THRESHOLD  = 0.085   # for "first 10 laps" variant
-RF_THRESHOLD        = 0.100   # red flag expected
-LAP1_INCIDENT_LIMIT = 0.090   # above this → not all 22 will complete lap 1
+
+SC_THRESHOLD        = 0.075   
+SC_EARLY_THRESHOLD  = 0.085  
+RF_THRESHOLD        = 0.100  
+LAP1_INCIDENT_LIMIT = 0.090   
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# DATA LOADING
-# ═══════════════════════════════════════════════════════════════════════════════
+
 
 def load_all_data():
-    """
-    Loads telemetry dataframes and the market predictions json payload defensively.
-    Maps keys to all case-sensitive and abbreviation variants (including DNF_Prob) 
-    used across the downstream solver modules.
-    """
+
     if not DRIVERS_CSV.exists() or not CONSTRUCTORS_CSV.exists():
         raise FileNotFoundError("Missing ML-ready CSV files. Run market_harvester.py first.")
     if not PREDICTIONS_JSON.exists():
         raise FileNotFoundError("Missing market_predictions.json. Run market_predict.py first.")
 
-    # Load telemetry structures
+   
     df_drivers = pd.read_csv(DRIVERS_CSV)
     df_constructors = pd.read_csv(CONSTRUCTORS_CSV)
 
-    # Load JSON model payload
+    
     with open(PREDICTIONS_JSON, "r") as fh:
         predict_data = json.load(fh)
 
-    # Extract metadata safely
+   
     meta = predict_data.get("metadata", {})
     
-    # Forward-compatibility patch for main() keys
-    meta["track_name"] = meta.get("track_name", "Monaco Grand Prix")
+   
+    meta["track_name"] = meta.get("track_name", "Unknown Grand Prix")
     meta["race_round"] = meta.get("race_round", 8)
     meta["is_sprint"] = meta.get("is_sprint", False)
     meta["circuit_dnf_rate"] = meta.get("circuit_dnf_rate", 0.12)
 
     track_name = meta["track_name"]
 
-    # Defensive parsing dictionaries
+    
     drivers_json = predict_data.get("drivers", {})
     constructors_json = predict_data.get("constructors", {})
 
@@ -104,24 +62,23 @@ def load_all_data():
     exp_points_map = {k: v.get("expected_points", 0.0) for k, v in drivers_json.items()}
     base_points_map = {k: v.get("base_points", 0.0) for k, v in drivers_json.items()}
 
-    # Map variables back to columns using lowercase formats
+   
     df_drivers["dnf_probability"] = df_drivers["Driver"].map(dnf_prob_map).fillna(0.05)
     df_drivers["expected_points"] = df_drivers["Driver"].map(exp_points_map).fillna(0.0)
     df_drivers["base_points"] = df_drivers["Driver"].map(base_points_map).fillna(0.0)
 
-    # Core CamelCase alignments and abbreviation mappings for ALL solver files (Q1 - Q10)
+    
     df_drivers["ExpectedPoints"] = df_drivers["expected_points"]
     df_drivers["BasePoints"] = df_drivers["base_points"]
     df_drivers["DNFProbability"] = df_drivers["dnf_probability"]
     df_drivers["DNF_Prob"] = df_drivers["dnf_probability"]  
 
-    # Map constructors safely
+    
     c_exp_map = {k: v.get("expected_points", 0.0) for k, v in constructors_json.items()}
     df_constructors["expected_points"] = df_constructors["Constructor"].map(c_exp_map).fillna(0.0)
     df_constructors["ExpectedPoints"] = df_constructors["expected_points"]
 
-    # --- BUG FIX: Derive Constructor DNF_Prob ---
-    # Convert historical team DNFs into a 0.0 - 1.0 probability multiplier for Q5
+   
     if "DNFs" in df_constructors.columns:
         max_dnfs = df_constructors["DNFs"].max()
         max_dnfs = max_dnfs if max_dnfs > 0 else 1
@@ -132,9 +89,6 @@ def load_all_data():
     print(f"[INFO] Successfully loaded telemetry and model data for: {track_name}")
     return meta, df_drivers, df_constructors, predict_data
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# FORMATTING HELPERS
-# ═══════════════════════════════════════════════════════════════════════════════
 
 W = 72
 
@@ -168,9 +122,7 @@ def confidence_label(score: float, ranked_scores: list) -> str:
     return "LOW "
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q1 — PREDICTED RACE TOP 10 FINISHERS
-# ═══════════════════════════════════════════════════════════════════════════════
+
 
 def q1_race_top10(drivers: pd.DataFrame, circuit_dnf: float) -> None:
     """
@@ -181,7 +133,7 @@ def q1_race_top10(drivers: pd.DataFrame, circuit_dnf: float) -> None:
     df["RaceScore"] = (
         df["ExpectedPoints"] * 0.70
       + df["AvgPoints"]       * 0.20
-      + df["FP_Progression"].fillna(0).clip(-10, 10) * 0.5   # recency momentum
+      + df["FP_Progression"].fillna(0).clip(-10, 10) * 0.5 
     )
     df = df.sort_values("RaceScore", ascending=False).reset_index(drop=True)
     top10 = df.head(10)
@@ -201,7 +153,7 @@ def q1_race_top10(drivers: pd.DataFrame, circuit_dnf: float) -> None:
         )
     divider()
 
-    # Podium call with brief rationale
+   
     p1, p2, p3 = df.iloc[0], df.iloc[1], df.iloc[2]
     print(f"\n  PREDICTED PODIUM:")
     for pos, drv in enumerate([p1, p2, p3], 1):
@@ -212,7 +164,7 @@ def q1_race_top10(drivers: pd.DataFrame, circuit_dnf: float) -> None:
             gap_note = "  ← improving tyre deg trend"
         print(f"    {medal(pos)} {drv['Driver']:<16} ({drv['Team']}){gap_note}")
 
-    # DNF watch-outs
+    
     high_dnf = df[(df["DNF_Prob"] > 0.15) & (df.index < 10)]
     if not high_dnf.empty:
         print(f"\n  ⚠  DNF WATCH in top 10: " +
@@ -220,9 +172,7 @@ def q1_race_top10(drivers: pd.DataFrame, circuit_dnf: float) -> None:
     print()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q2 — POLE POSITION PREDICTION
-# ═══════════════════════════════════════════════════════════════════════════════
+
 
 def q2_pole_position(drivers: pd.DataFrame) -> None:
     """
@@ -259,9 +209,7 @@ def q2_pole_position(drivers: pd.DataFrame) -> None:
     print()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q3 — ALL 1V1 QUALIFYING MATCHUPS
-# ═══════════════════════════════════════════════════════════════════════════════
+
 
 def q3_qualifying_1v1s(drivers: pd.DataFrame) -> None:
     """
@@ -315,9 +263,7 @@ def q3_qualifying_1v1s(drivers: pd.DataFrame) -> None:
           f"       in the table above and pick the predicted winner directly.\n")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q4 — TEAM QUALIFYING SEGMENT PROJECTIONS
-# ═══════════════════════════════════════════════════════════════════════════════
+
 
 def q4_team_qualifying_segments(drivers: pd.DataFrame) -> None:
     df = drivers[["Driver", "Team", "FP3_DeltaBest", "FP_Progression"]].copy()
@@ -391,9 +337,7 @@ def q4_team_qualifying_segments(drivers: pd.DataFrame) -> None:
     print()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q5 — FASTEST DHL PITSTOP TEAM
-# ═══════════════════════════════════════════════════════════════════════════════
+
 
 def q5_fastest_pitstop(constructors: pd.DataFrame) -> None:
     df = constructors.copy()
@@ -426,9 +370,6 @@ def q5_fastest_pitstop(constructors: pd.DataFrame) -> None:
     print(f"    Season fastest stops: {int(winner['FastestPitstops'])}  |  DNF risk: {winner['DNF_Prob']*100:.1f}%\n")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q6 — SAFETY CAR / VSC DURING THE GP
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def q6_safety_car(circuit_dnf: float, drivers: pd.DataFrame) -> None:
     avg_driver_dnf_rate = drivers["DNF_Prob"].mean()
@@ -457,9 +398,7 @@ def q6_safety_car(circuit_dnf: float, drivers: pd.DataFrame) -> None:
     print(f"    Note: {note}\n")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q7 — MIDFIELD 4-WAY HEAD-TO-HEAD
-# ═══════════════════════════════════════════════════════════════════════════════
+
 
 def q7_midfield_4way(drivers: pd.DataFrame, midfield_drivers: list[str] | None = None) -> None:
     df = drivers.copy()
@@ -496,9 +435,6 @@ def q7_midfield_4way(drivers: pd.DataFrame, midfield_drivers: list[str] | None =
     print(f"\n  ✦ PREDICTED TO FINISH HIGHEST:  {winner['Driver']}  ({winner['Team']})\n")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q8 — DRIVER POSITION BRACKET
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def q8_driver_bracket(drivers: pd.DataFrame, target_drivers: list[str] | None = None) -> None:
     df = drivers.copy()
@@ -539,9 +475,6 @@ def q8_driver_bracket(drivers: pd.DataFrame, target_drivers: list[str] | None = 
     print()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q9 — FASTEST LAP OF THE RACE
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def q9_fastest_lap(drivers: pd.DataFrame) -> None:
     df = drivers.copy()
@@ -588,9 +521,6 @@ def q9_fastest_lap(drivers: pd.DataFrame) -> None:
     print(f"    FP3 pace: Δ{winner['FP3_DeltaBest']:.4f}s  |  Tyre deg slope: {winner['FP2_DegSlope']:+.3f}\n")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q10 — CLASSIFIED FINISHERS COUNT
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def q10_classified_finishers(drivers: pd.DataFrame, circuit_dnf: float) -> None:
     circuit_expected_dnfs  = circuit_dnf * 22
@@ -621,9 +551,6 @@ def q10_classified_finishers(drivers: pd.DataFrame, circuit_dnf: float) -> None:
     print(f"\n  ✦ PREDICTED CLASSIFIED FINISHERS:  {classified} / 22 cars\n")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# VARIANT QUESTIONS
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def v1_red_flag_count(circuit_dnf: float) -> None:
     header("V1  ·  RED FLAG COUNT FORECAST", "─")
@@ -774,9 +701,7 @@ def v10_most_points_over_weekend(constructors: pd.DataFrame, meta: dict) -> None
     print(f"\n  ✦ PREDICTED MOST POINTS:  {winner['Constructor']}\n")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# MAIN
-# ═══════════════════════════════════════════════════════════════════════════════
+
 
 def main():
     meta, drivers, constructors, predict_data = load_all_data()
@@ -786,14 +711,14 @@ def main():
     race_round   = meta["race_round"]
     is_sprint    = race_round in SPRINT_ROUNDS
 
-    # ── Banner ─────────────────────────────────────────────────────────────────
+    
     print("\n" + "█" * W)
     print(f"  F1 PREDICTION GAME SOLVER  —  {track_name.upper()}")
     print(f"  Race Round: {race_round}  |  Circuit DNF Rate: {circuit_dnf*100:.1f}%  |"
           f"  Sprint Weekend: {'YES' if is_sprint else 'NO'}")
     print("█" * W + "\n")
 
-    # ── CORE QUESTIONS ─────────────────────────────────────────────────────────
+   
     q1_race_top10(drivers, circuit_dnf)
     q2_pole_position(drivers)
     q3_qualifying_1v1s(drivers)
@@ -805,7 +730,7 @@ def main():
     q9_fastest_lap(drivers)
     q10_classified_finishers(drivers, circuit_dnf)
 
-    # ── VARIANT QUESTIONS ──────────────────────────────────────────────────────
+   
     print("\n" + "█" * W)
     print(f"  VARIANT QUESTION ANSWERS  —  {track_name.upper()}")
     print("█" * W + "\n")
@@ -824,7 +749,7 @@ def main():
     v9_teams_in_q3(drivers)
     v10_most_points_over_weekend(constructors, meta)
 
-    # ── Footer ─────────────────────────────────────────────────────────────────
+    
     print("█" * W)
     print(f"  END OF PREDICTIONS  —  {track_name.upper()}")
     print(f"  All signals derived from FP1/FP2/FP3 telemetry only.")

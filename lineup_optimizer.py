@@ -1,17 +1,3 @@
-"""
-lineup_optimizer.py
-────────────────────────────────────────────────────────────────────────────────
-Fantasy F1 Lineup Optimizer
-Uses PuLP (linear programming) to select the maximum-scoring roster under
-the official game constraints:
-  • Budget cap  : $100.0 M
-  • Drivers     : exactly 5
-  • Constructors: exactly 2
-
-Data source: Reads live predictions from market_predictions.json or runs market_predict.py
-────────────────────────────────────────────────────────────────────────────────
-"""
-
 import json
 import math
 import sys
@@ -26,7 +12,7 @@ except ImportError:
         "        then retry."
     )
 
-# ── 1. LOAD LIVE DATA FROM PREDICTIONS PATH ──────────────────────────────────
+
 
 JSON_INPUT = Path("market_predictions.json")
 
@@ -36,7 +22,7 @@ constructor_costs = {}
 constructor_expected_points = {}
 
 try:
-    # Strategy A: Read the freshly exported JSON file if it exists
+   
     if JSON_INPUT.exists():
         with open(JSON_INPUT, "r") as f:
             payload = json.load(f)
@@ -52,14 +38,14 @@ try:
         print(f"[INFO] Successfully loaded live data from {JSON_INPUT}\n")
         
     else:
-        # Strategy B: Dynamic fallback - import pipeline and generate variables on the fly
+        
         print("[INFO] market_predictions.json not found. Triggering market_predict pipeline...")
         from market_predict import run_pipeline
         driver_costs, driver_expected_points, constructor_costs, constructor_expected_points = run_pipeline()
         print("[INFO] Live data generated and loaded successfully.\n")
 
 except Exception as e:
-    # Strategy C: Hardcoded fallback if everything else fails
+    
     print(f"[WARN] Error loading live predictions ({e}). Running with historical demo data.\n")
 
     driver_costs = {
@@ -82,7 +68,7 @@ except Exception as e:
     }
 
 
-# ── 2. SANITIZE & VALIDATE DATA INTEGRITY ─────────────────────────────────────
+
 
 def _sanitize_and_validate(costs: dict, points: dict, label: str) -> tuple[dict, dict]:
     cleaned_costs = {}
@@ -108,17 +94,17 @@ constructor_costs, constructor_expected_points = _sanitize_and_validate(construc
 drivers = list(driver_costs.keys())
 constructors = list(constructor_costs.keys())
 
-# ── 3. GAME CONSTRAINTS ───────────────────────────────────────────────────────
+
 
 BUDGET_CAP = 100.0  
 NUM_DRIVERS = 5
 NUM_CONSTRUCTORS = 2
 
-# ── 4. BUILD THE LINEAR PROGRAMMING MODEL ────────────────────────────────────
+
 
 model = pulp.LpProblem("Fantasy_F1_Lineup_Optimizer", pulp.LpMaximize)
 
-# Safe naming convention clean up for PuLP tokens
+
 def sanitize_var_name(name):
     return name.replace(' ', '_').replace('.', '').replace('-', '_').replace('(', '').replace(')', '')
 
@@ -126,14 +112,14 @@ driver_vars = {d: pulp.LpVariable(f"driver_{sanitize_var_name(d)}", cat="Binary"
 chip_vars = {d: pulp.LpVariable(f"chip_{sanitize_var_name(d)}", cat="Binary") for d in drivers}
 constructor_vars = {c: pulp.LpVariable(f"constructor_{sanitize_var_name(c)}", cat="Binary") for c in constructors}
 
-# Object function: Maximize Expected Points
+
 model += (
     pulp.lpSum(driver_expected_points[d] * driver_vars[d] for d in drivers)
     + pulp.lpSum(driver_expected_points[d] * chip_vars[d] for d in drivers)
     + pulp.lpSum(constructor_expected_points[c] * constructor_vars[c] for c in constructors)
 ), "Total_Expected_Points"
 
-# Constraints
+
 model += (pulp.lpSum(driver_costs[d] * driver_vars[d] for d in drivers) + 
           pulp.lpSum(constructor_costs[c] * constructor_vars[c] for c in constructors) <= BUDGET_CAP), "Budget_Cap"
 
@@ -144,7 +130,7 @@ for d in drivers:
     model += (chip_vars[d] <= driver_vars[d]), f"Chip_Constraint_{sanitize_var_name(d)}"
 model += (pulp.lpSum(chip_vars[d] for d in drivers) == 1), "Exactly_One_Chip"
 
-# ── 5. SOLVE ──────────────────────────────────────────────────────────────────
+
 
 solver = pulp.PULP_CBC_CMD(msg=False)
 status = model.solve(solver)
@@ -152,7 +138,7 @@ status = model.solve(solver)
 if pulp.LpStatus[model.status] != "Optimal":
     sys.exit(f"[ERROR] Solver could not find an optimal solution. Status: {pulp.LpStatus[model.status]}")
 
-# ── 6. EXTRACT RESULTS ────────────────────────────────────────────────────────
+
 
 selected_drivers = [d for d in drivers if pulp.value(driver_vars[d]) > 0.5]
 selected_constructors = [c for c in constructors if pulp.value(constructor_vars[c]) > 0.5]
@@ -168,7 +154,6 @@ total_points = (
 selected_drivers.sort(key=lambda d: driver_expected_points[d], reverse=True)
 selected_constructors.sort(key=lambda c: constructor_expected_points[c], reverse=True)
 
-# ── 7. PRINT RESULTS ──────────────────────────────────────────────────────────
 
 W = 58  
 def divider(char="─"): print(char * W)
