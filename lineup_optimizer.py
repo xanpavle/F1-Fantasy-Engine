@@ -12,8 +12,6 @@ except ImportError:
         "        then retry."
     )
 
-
-
 JSON_INPUT = Path("market_predictions.json")
 
 driver_costs = {}
@@ -21,33 +19,60 @@ driver_expected_points = {}
 constructor_costs = {}
 constructor_expected_points = {}
 
+# A helper dictionary to map uppercase raw dataset keys to clean display names
+NAME_DISPLAY_MAP = {
+    "VERSTAPPEN": "M. Verstappen", "NORRIS": "L. Norris", "LECLERC": "C. Leclerc",
+    "SAINZ": "C. Sainz", "RUSSELL": "G. Russell", "HAMILTON": "L. Hamilton",
+    "ALONSO": "F. Alonso", "PEREZ": "S. Perez", "PIASTRI": "O. Piastri",
+    "STROLL": "L. Stroll", "OCON": "E. Ocon", "GASLY": "P. Gasly",
+    "BOTTAS": "V. Bottas", "HULKENBERG": "N. Hulkenberg", "TSUNODA": "Y. Tsunoda",
+    "ALBON": "A. Albon", "ANTONELLI": "K. Antonelli", "LAWSON": "L. Lawson",
+    "MAGNUSSEN": "K. Magnussen", "ZHOU": "G. Zhou", "SARGEANT": "L. Sargeant",
+    "RICCIARDO": "D. Ricciardo", "BEARMAN": "O. Bearman", "COLA PINTO": "F. Colapinto"
+}
+
 try:
-   
     if JSON_INPUT.exists():
         with open(JSON_INPUT, "r") as f:
             payload = json.load(f)
         
-        for name, stats in payload["drivers"].items():
-            driver_costs[name] = stats["cost"]
-            driver_expected_points[name] = stats["expected_points"]
+        # Load live drivers (Normalize keys to uppercase to match market_predictions.json output)
+        for raw_name, stats in payload["drivers"].items():
+            name_key = str(raw_name).strip().upper()
+            display_name = NAME_DISPLAY_MAP.get(name_key, raw_name.title())
+            driver_costs[display_name] = stats["cost"]
+            driver_expected_points[display_name] = stats["expected_points"]
             
-        for name, stats in payload["constructors"].items():
-            constructor_costs[name] = stats["cost"]
-            constructor_expected_points[name] = stats["expected_points"]
+        # Load live constructors (Ensure clean casing string matches)
+        for raw_name, stats in payload["constructors"].items():
+            c_name = str(raw_name).strip().title().replace("Redbull", "Red Bull").replace("Racingbulls", "Racing Bulls")
+            constructor_costs[c_name] = stats["cost"]
+            constructor_expected_points[c_name] = stats["expected_points"]
             
         print(f"[INFO] Successfully loaded live data from {JSON_INPUT}\n")
         
     else:
-        
         print("[INFO] market_predictions.json not found. Triggering market_predict pipeline...")
         from market_predict import run_pipeline
-        driver_costs, driver_expected_points, constructor_costs, constructor_expected_points = run_pipeline()
+        raw_dc, raw_dep, raw_cc, raw_cep = run_pipeline()
+        
+        # Normalize keys generated live from pipeline execution
+        for raw_name, cost in raw_dc.items():
+            name_key = str(raw_name).strip().upper()
+            display_name = NAME_DISPLAY_MAP.get(name_key, raw_name.title())
+            driver_costs[display_name] = cost
+            driver_expected_points[display_name] = raw_dep[raw_name]
+            
+        for raw_name, cost in raw_cc.items():
+            c_name = str(raw_name).strip().title().replace("Redbull", "Red Bull").replace("Racingbulls", "Racing Bulls")
+            constructor_costs[c_name] = cost
+            constructor_expected_points[c_name] = raw_cep[raw_name]
+            
         print("[INFO] Live data generated and loaded successfully.\n")
 
 except Exception as e:
-    
     print(f"[WARN] Error loading live predictions ({e}). Running with historical demo data.\n")
-
+    # Backup static fallback data
     driver_costs = {
         "M. Verstappen": 30.0, "L. Norris": 27.0, "C. Leclerc": 24.5, "C. Sainz": 22.0,
         "G. Russell": 21.5, "L. Hamilton": 20.0, "F. Alonso": 17.5, "S. Perez": 16.0,
@@ -66,9 +91,6 @@ except Exception as e:
     constructor_expected_points = {
         "Red Bull": 88.6, "Ferrari": 74.3, "Mercedes": 70.1, "McLaren": 68.4, "Aston Martin": 46.2
     }
-
-
-
 
 def _sanitize_and_validate(costs: dict, points: dict, label: str) -> tuple[dict, dict]:
     cleaned_costs = {}
@@ -94,16 +116,11 @@ constructor_costs, constructor_expected_points = _sanitize_and_validate(construc
 drivers = list(driver_costs.keys())
 constructors = list(constructor_costs.keys())
 
-
-
 BUDGET_CAP = 100.0  
 NUM_DRIVERS = 5
 NUM_CONSTRUCTORS = 2
 
-
-
 model = pulp.LpProblem("Fantasy_F1_Lineup_Optimizer", pulp.LpMaximize)
-
 
 def sanitize_var_name(name):
     return name.replace(' ', '_').replace('.', '').replace('-', '_').replace('(', '').replace(')', '')
@@ -112,13 +129,11 @@ driver_vars = {d: pulp.LpVariable(f"driver_{sanitize_var_name(d)}", cat="Binary"
 chip_vars = {d: pulp.LpVariable(f"chip_{sanitize_var_name(d)}", cat="Binary") for d in drivers}
 constructor_vars = {c: pulp.LpVariable(f"constructor_{sanitize_var_name(c)}", cat="Binary") for c in constructors}
 
-
 model += (
     pulp.lpSum(driver_expected_points[d] * driver_vars[d] for d in drivers)
     + pulp.lpSum(driver_expected_points[d] * chip_vars[d] for d in drivers)
     + pulp.lpSum(constructor_expected_points[c] * constructor_vars[c] for c in constructors)
 ), "Total_Expected_Points"
-
 
 model += (pulp.lpSum(driver_costs[d] * driver_vars[d] for d in drivers) + 
           pulp.lpSum(constructor_costs[c] * constructor_vars[c] for c in constructors) <= BUDGET_CAP), "Budget_Cap"
@@ -130,15 +145,11 @@ for d in drivers:
     model += (chip_vars[d] <= driver_vars[d]), f"Chip_Constraint_{sanitize_var_name(d)}"
 model += (pulp.lpSum(chip_vars[d] for d in drivers) == 1), "Exactly_One_Chip"
 
-
-
 solver = pulp.PULP_CBC_CMD(msg=False)
 status = model.solve(solver)
 
 if pulp.LpStatus[model.status] != "Optimal":
     sys.exit(f"[ERROR] Solver could not find an optimal solution. Status: {pulp.LpStatus[model.status]}")
-
-
 
 selected_drivers = [d for d in drivers if pulp.value(driver_vars[d]) > 0.5]
 selected_constructors = [c for c in constructors if pulp.value(constructor_vars[c]) > 0.5]
@@ -153,7 +164,6 @@ total_points = (
 
 selected_drivers.sort(key=lambda d: driver_expected_points[d], reverse=True)
 selected_constructors.sort(key=lambda c: constructor_expected_points[c], reverse=True)
-
 
 W = 58  
 def divider(char="─"): print(char * W)
